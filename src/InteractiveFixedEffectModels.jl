@@ -16,12 +16,13 @@ using Base.Cartesian
 import StatsBase: coef, nobs, coeftable, vcov, predict, residuals, var, RegressionModel, model_response, stderror, confint, CoefTable,  dof_residual
 import CategoricalArrays: CategoricalArray, CategoricalVector, compress, categorical, CategoricalPool, levels, droplevels!
 import DataFrames: DataFrame, AbstractDataFrame, completecases, names!, ismissing
-import StatsModels: ModelMatrix, ModelFrame, Terms, coefnames, Formula, completecases, names!, @formula, evalcontrasts, check_non_redundancy!
 import LeastSquaresOptim
 using FillArrays
 using Reexport
+import StatsModels: @formula,  FormulaTerm, Term, InteractionTerm, ConstantTerm, MatrixTerm, AbstractTerm, coefnames, columntable, missing_omit, termvars, schema, apply_schema, modelmatrix, response, terms
 @reexport using FixedEffectModels
 import FixedEffectModels: title, top
+
 
 
 ##############################################################################

@@ -10,8 +10,7 @@ function regife(df::AbstractDataFrame, m::Model; kwargs...)
     regife(df, m.f; m.dict..., kwargs...)
 end
 
-function regife(df::AbstractDataFrame, 
-             f::Formula;
+function regife(df::AbstractDataFrame, f::FormulaTerm;
              ife::Union{Symbol, Expr, Nothing} = nothing, 
              fe::Union{Symbol, Expr, Nothing} = nothing, 
              vcov::Union{Symbol, Expr, Nothing} = :(simple()), 
@@ -21,50 +20,47 @@ function regife(df::AbstractDataFrame,
              lambda::Number = 0.0, 
              maxiter::Integer = 10_000, 
              tol::Real = 1e-9, 
-             save::Union{Bool, Nothing} = nothing)
+             save::Union{Bool, Nothing} = nothing,
+             contrasts::Dict = Dict{Symbol, Any}())
 
     ##############################################################################
     ##
     ## Transform DataFrame -> Matrix
     ##
     ##############################################################################
-    feformula = fe
+
     if isa(vcov, Symbol)
         vcovformula = VcovFormula(Val{vcov})
     else 
         vcovformula = VcovFormula(Val{vcov.args[1]}, (vcov.args[i] for i in 2:length(vcov.args))...)
     end
     m = InteractiveFixedEffectFormula(ife)
+
+    if  (ConstantTerm(0) ∉ FixedEffectModels.eachterm(f.rhs)) & (ConstantTerm(1) ∉ FixedEffectModels.eachterm(f.rhs))
+        f = FormulaTerm(f.lhs, tuple(ConstantTerm(1), FixedEffectModels.eachterm(f.rhs)...))
+    end
+    formula, formula_endo, formula_iv = FixedEffectModels.decompose_iv(f)
     ## parse formula 
-    rf = deepcopy(f)
-    (has_iv, iv_formula, iv_terms, endo_formula, endo_terms) = FixedEffectModels.decompose_iv!(rf)
-    if has_iv
+    if formula_iv != nothing
         error("partial_out does not support instrumental variables")
     end
-    has_absorb = feformula != nothing
+    has_absorb = fe != nothing
     has_weights = (weights != nothing)
 
 
-    rt = Terms(rf)
-    has_regressors = allvars(rf.rhs) != [] || (rt.intercept == true && !has_absorb)
-    # change default if has_regressors
-    if save == nothing 
-        save = !has_regressors
-    end
     ## create a dataframe without missing values & negative weightss
-    vars = allvars(rf)
+    vars = allvars(formula)
+    absorb_vars = allvars(fe)
     vcov_vars = allvars(vcovformula)
-    absorb_vars = allvars(feformula)
     factor_vars = vcat(allvars(m.id), allvars(m.time))
     rem = setdiff(absorb_vars, factor_vars)
     if length(rem) > 0
         error("The categorical variable $(rem[1]) appears in @fe but does not appear in @ife. Simply add it in @formula instead")
     end
-    all_vars = vcat(vars, absorb_vars, factor_vars, vcov_vars)
-    all_vars = unique(Symbol.(all_vars))
-    esample = completecases(df[all_vars])
+    all_vars = unique(vcat(vars, absorb_vars, factor_vars, vcov_vars))
+    esample = completecases(df[!, all_vars])
     if has_weights
-        esample .&= isnaorneg(df[weights])
+        esample .&= isnaorneg(df[!, weights])
         all_vars = unique(vcat(all_vars, weights))
     end
     if subset != nothing
@@ -74,7 +70,7 @@ function regife(df::AbstractDataFrame,
         end
         esample .&= subset
     end
-    main_vars = unique(Symbol.(vcat(vars, factor_vars)))
+    main_vars = unique(vcat(vars, factor_vars))
 
 
     # Compute data needed for errors
@@ -85,17 +81,17 @@ function regife(df::AbstractDataFrame,
 
     ## Compute factors, an array of AbtractFixedEffects
     if has_absorb
-        fes, ids = FixedEffectModels.parse_fixedeffect(df, Terms(@eval(@formula(nothing ~ $(feformula)))))
-        # in case some FixedEffect is a FixedEffectIntercept, remove the intercept
-        if any([isa(x.interaction, Ones) for x in fes]) 
-            rt.intercept = false
+        feformula = @eval(@formula(nothing ~ $(fe)))
+        fes, ids = FixedEffectModels.parse_fixedeffect(df, feformula)
+        if any([isa(fe.interaction, Ones) for fe in fes])
+                formula = FormulaTerm(formula.lhs, tuple(ConstantTerm(0), (t for t in FixedEffectModels.eachterm(formula.rhs) if t!= ConstantTerm(1))...))
+                has_absorb_intercept = true
         end
         fes = FixedEffect[FixedEffectModels._subset(fe, esample) for fe in fes]
         pfe = FixedEffectModels.FixedEffectMatrix(fes, sqrtw, Val{:lsmr})
-    else
-        pfe = nothing
     end
 
+    has_intercept = ConstantTerm(1) ∈ FixedEffectModels.eachterm(formula.rhs)
 
 
     iterations = 0
@@ -122,32 +118,40 @@ function regife(df::AbstractDataFrame,
     ## Construict vector y and matrix X
     ##
     ##############################################################################
+    subdf = columntable(df[esample, unique(vcat(vars))])
 
-    mf = ModelFrame2(rt, df, esample)
+    formula_schema = apply_schema(formula, schema(formula, subdf, contrasts), StatisticalModel)
+
+    y = convert(Vector{Float64}, response(formula_schema, subdf))
+    y .= y .* sqrtw
+    oldy = copy(y)
+    X = convert(Matrix{Float64}, modelmatrix(formula_schema, subdf))
+    X .= X .* sqrtw
+
+    # change default if has_regressors
+    has_regressors = size(X, 2) > 0
+    if save == nothing 
+        save = !has_regressors
+    end
+
+
 
     # Compute demeaned X
-    if has_regressors
-        coef_names = coefnames(mf)
-        X = ModelMatrix(mf).m
-        X .= X .* sqrtw 
-        if has_absorb
-            FixedEffectModels.solve_residuals!(X, pfe)
-        end
+    yname, coef_names = coefnames(formula_schema)
+    if !isa(coef_names, Vector)
+        coef_names = [coef_names]
     end
+    yname = Symbol(yname)
+    coef_names = Symbol.(coef_names)
 
-    # Compute demeaned y
-    py = model_response(mf)[:]
-    yname = rt.eterms[1]
-    if eltype(py) != Float64
-        y = convert(py, Float64)
-    else
-        y = py
-    end
-    y .= y .* sqrtw 
-    oldy = copy(y)
+
+
     if has_absorb
         FixedEffectModels.solve_residuals!(y, pfe)
-    end
+        FixedEffectModels.solve_residuals!(X, pfe)
+     end
+
+ 
 
     ##############################################################################
     ##
@@ -224,7 +228,7 @@ function regife(df::AbstractDataFrame,
         rss = sum(abs2, residuals)
     else
         residualsm = ym .- Xm * fs.b
-        crossxm = cholesky!(Xm' * Xm)
+        crossxm = cholesky!(Symmetric(Xm' * Xm))
         ## compute the right degree of freedom
         df_absorb_fe = 0
         if has_absorb 
@@ -237,17 +241,16 @@ function regife(df::AbstractDataFrame,
         ## estimate vcov matrix
         vcov_data = VcovData(Xm, crossxm, residualsm, dof_residual)
         matrix_vcov = vcov!(vcov_method_data, vcov_data)
-
         # compute various r2
         nobs = sum(esample)
         rss = sum(abs2, residualsm)
-        tss = compute_tss(ym, rt.intercept, sqrtw)
+        tss = compute_tss(ym, has_intercept || has_absorb_intercept, sqrtw)
         r2_within = 1 - rss / tss 
 
         rss = sum(abs2, residuals)
-        tss = compute_tss(oldy, rt.intercept || has_absorb, sqrtw)
+        tss = compute_tss(oldy, has_intercept || has_absorb_intercept, sqrtw)
         r2 = 1 - rss / tss 
-        r2_a = 1 - rss / tss * (nobs - rt.intercept) / dof_residual 
+        r2_a = 1 - rss / tss * (nobs - has_intercept) / dof_residual 
     end
 
     ##############################################################################
@@ -262,19 +265,20 @@ function regife(df::AbstractDataFrame,
         augmentdf = DataFrame(fp, fs, esample)
         # save residuals in a dataframe
         if all(esample)
-            augmentdf[:residuals] = residuals
+            augmentdf[!, :residuals] = residuals
         else
-            augmentdf[:residuals] =  Vector{Union{Float64, Missing}}(missing, size(augmentdf, 1))
+            augmentdf[!, :residuals] =  Vector{Union{Float64, Missing}}(missing, size(augmentdf, 1))
             augmentdf[esample, :residuals] = residuals
         end
 
         # save fixed effects in a dataframe
         if has_absorb
             # residual before demeaning
-            mf = ModelFrame2(rt, df, esample)
-            oldresiduals = model_response(mf)[:]
+             oldresiduals = convert(Vector{Float64}, response(formula_schema, subdf))
+             oldresiduals .= oldresiduals .* sqrtw
+             oldX = convert(Matrix{Float64}, modelmatrix(formula_schema, subdf))
+             oldX .= oldX .* sqrtw
             if has_regressors
-                oldX = ModelMatrix(mf).m
                 gemm!('N', 'N', -1.0, oldX, coef, 1.0, oldresiduals)
             end
             fp = FactorModel(oldresiduals, sqrtw, id.refs, time.refs, m.rank)
@@ -283,7 +287,7 @@ function regife(df::AbstractDataFrame,
             # get fixed effect
             newfes, b, c = FixedEffectModels.solve_coefficients!(oldresiduals, pfe; tol = tol, maxiter = maxiter)
             for j in 1:length(fes)
-                augmentdf[ids[j]] = Vector{Union{Float64, Missing}}(missing, length(esample))
+                augmentdf[!, ids[j]] = Vector{Union{Float64, Missing}}(missing, length(esample))
                 augmentdf[esample, ids[j]] = newfes[j]
             end
         end
@@ -308,5 +312,5 @@ function evaluate_subset(df, ex::Expr)
         return Expr(ex.head, (evaluate_subset(df, ex.args[i]) for i in 1:length(ex.args))...)
     end
 end
-evaluate_subset(df, ex::Symbol) = df[ex]
+evaluate_subset(df, ex::Symbol) = df[!, ex]
 evaluate_subset(df, ex)  = ex

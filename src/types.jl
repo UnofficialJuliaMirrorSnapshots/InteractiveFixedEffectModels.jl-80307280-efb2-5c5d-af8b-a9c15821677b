@@ -84,7 +84,7 @@ end
 function rescale!(fs::FactorSolution{1})
     out = norm(fs.timepool)
     rmul!(fs.idpool, out)
-    rmul!(fs.timepool, 1/out)
+    rmul!(fs.timepool, 1 / out)
 end
 # normalize factors and loadings so that F'F = Id, Lambda'Lambda diagonal
 function rescale!(newfs::AbstractFactorSolution, fs::AbstractFactorSolution)
@@ -119,10 +119,10 @@ function DataFrame(fp::AbstractFactorModel, fs::AbstractFactorSolution, esample:
     df = DataFrame()
     for r in 1:rank(fp)
         # loadings
-        df[Symbol("loadings$r")] = Vector{Union{Float64, Missing}}(missing, length(esample))
+        df[!, Symbol("loadings$r")] = Vector{Union{Float64, Missing}}(missing, length(esample))
         df[esample, Symbol("loadings$r")] = fs.idpool[:, r][fp.idrefs]
 
-        df[Symbol("factors$r")] = Vector{Union{Float64, Missing}}(missing, length(esample))
+        df[!, Symbol("factors$r")] = Vector{Union{Float64, Missing}}(missing, length(esample))
         df[esample, Symbol("factors$r")] = fs.timepool[:, r][fp.timerefs]
     end
     return df
@@ -235,7 +235,7 @@ struct InteractiveFixedEffectsResult <: AbstractRegressionResult
 
     coefnames::Vector       # Name of coefficients
     yname::Symbol           # Name of dependent variable
-    formula::Formula        # Original formula 
+    formula::FormulaTerm        # Original formula 
 
     nobs::Int64             # Number of observations
     dof_residual::Int64      # degree of freedoms
