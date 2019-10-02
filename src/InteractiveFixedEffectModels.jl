@@ -20,10 +20,13 @@ import LeastSquaresOptim
 using FillArrays
 using Distributions
 using Reexport
-import StatsModels: @formula,  FormulaTerm, Term, InteractionTerm, ConstantTerm, MatrixTerm, AbstractTerm, coefnames, columntable, missing_omit, termvars, schema, apply_schema, modelmatrix, response, terms
+import StatsModels: @formula,  FormulaTerm, Term, InteractionTerm, ConstantTerm, MatrixTerm, AbstractTerm, coefnames, columntable, missing_omit, termvars, schema, apply_schema, modelmatrix, response, terms, FunctionTerm
+using FixedEffects
 @reexport using FixedEffectModels
 
-
+if !isdefined(FixedEffects, :AbstractFixedEffectSolver)
+	AbstractFixedEffectSolver{T} = AbstractFixedEffectMatrix{T}
+end
 
 ##############################################################################
 ##
@@ -31,8 +34,9 @@ import StatsModels: @formula,  FormulaTerm, Term, InteractionTerm, ConstantTerm,
 ##
 ##############################################################################
 
-export InteractiveFixedEffectFormula,
-InteractiveFixedEffectResult,
+export InteractiveFixedEffectTerm,
+InteractiveFixedEffectModel, 
+ife,
 regife
 ##############################################################################
 ##
@@ -41,11 +45,9 @@ regife
 ##############################################################################
 include("types.jl")
 
-include("utils/models.jl")
-
 include("methods/gauss_seidel.jl")
 include("methods/ls.jl")
 
-include("regife.jl")
+include("fit.jl")
 
 end
