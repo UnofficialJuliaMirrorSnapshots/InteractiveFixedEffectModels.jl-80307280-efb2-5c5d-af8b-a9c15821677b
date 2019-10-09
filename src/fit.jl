@@ -4,38 +4,47 @@
 ## Fit is the only exported function
 ##
 ##############################################################################
-function StatsBase.fit(::Type{InteractiveFixedEffectModel}, m::Model, df::AbstractDataFrame; kwargs...)
-    regife(m, df; kwargs...)
-end
 
 
-function regife(df::AbstractDataFrame, m::Model; kwargs...)
+
+
+function regife(df, m::FixedEffectModels.ModelTerm; kwargs...)
     regife(df, m.f; m.dict..., kwargs...)
 end
 
-function regife(df::AbstractDataFrame, f::FormulaTerm;
-             feformula::Union{Symbol, Expr, Nothing} = nothing,
-             ifeformula::Union{Symbol, Expr, Nothing} = nothing,
-             vcov::Union{Symbol, Expr, Nothing} = :(simple()), 
-             weights::Union{Symbol, Expr, Nothing} = nothing, 
-             subset::Union{Symbol, Expr, Nothing} = nothing, 
+function regife(df, f::FormulaTerm, vcov::Vcov.AbstractVcov = Vcov.simple();
+            weights::Union{Symbol, Nothing} = nothing, 
+            subset::Union{AbstractVector, Nothing} = nothing,
              method::Symbol = :dogleg, 
              lambda::Number = 0.0, 
              maxiter::Integer = 10_000, 
              tol::Real = 1e-9, 
              save::Union{Bool, Nothing} = nothing,
-             contrasts::Dict = Dict{Symbol, Any}())
+             contrasts::Dict = Dict{Symbol, Any}(),
+             feformula::Union{Symbol, Expr, Nothing} = nothing,
+            ifeformula::Union{Symbol, Expr, Nothing} = nothing,
+            vcovformula::Union{Symbol, Expr, Nothing} = nothing,
+            subsetformula::Union{Symbol, Expr, Nothing} = nothing)
 
     ##############################################################################
     ##
     ## Transform DataFrame -> Matrix
     ##
     ##############################################################################
+    df = DataFrame(df; copycols = false)
 
-    if isa(vcov, Symbol)
-        vcovformula = VcovFormula(Val{vcov})
-    else 
-        vcovformula = VcovFormula(Val{vcov.args[1]}, (vcov.args[i] for i in 2:length(vcov.args))...)
+    # to deprecate
+    if vcovformula != nothing
+        if (vcovformula == :simple) | (vcovformula == :(simple()))
+            vcov = Vcov.Simple()
+        elseif (vcovformula == :robust) | (vcovformula == :(robust()))
+            vcov = Vcov.Robust()
+        else
+            vcov = Vcov.cluster(StatsModels.termvars(@eval(@formula(0 ~ $(vcovformula.args[2]))))...)
+        end
+    end
+    if subsetformula != nothing
+        subset = eval(evaluate_subset(df, subsetformula))
     end
 
     if  (ConstantTerm(0) ∉ FixedEffectModels.eachterm(f.rhs)) & (ConstantTerm(1) ∉ FixedEffectModels.eachterm(f.rhs))
@@ -57,30 +66,29 @@ function regife(df::AbstractDataFrame, f::FormulaTerm;
 
 
     ## create a dataframe without missing values & negative weightss
-    vars = allvars(formula)
+    vars = StatsModels.termvars(formula)
     if feformula != nothing # remove after depreciation
-        vars = vcat(vars, allvars(feformula))
+        vars = vcat(vars, StatsModels.termvars(@eval(@formula(0 ~ $(feformula)))))
     end
-    vcov_vars = allvars(vcovformula)
-    factor_vars = vcat(allvars(m.id), allvars(m.time))
+    vcov_vars = StatsModels.termvars(vcov)
+    factor_vars = [m.id, m.time]
     all_vars = unique(vcat(vars, factor_vars, vcov_vars))
     esample = completecases(df[!, all_vars])
     if has_weights
-        esample .&= FixedEffectModels.isnaorneg(df[!, weights])
+        esample .&= BitArray(!ismissing(x) & (x > 0) for x in df[!, weights])
         all_vars = unique(vcat(all_vars, weights))
     end
     if subset != nothing
-        subset = eval(evaluate_subset(df, subset))
         if length(subset) != size(df, 1)
             error("df has $(size(df, 1)) rows but the subset vector has $(length(subset)) elements")
         end
-        esample .&= subset
+        esample .&= BitArray(!ismissing(x) && x for x in subset)
     end
     main_vars = unique(vcat(vars, factor_vars))
 
 
     # Compute data needed for errors
-    vcov_method_data = VcovMethod(df[esample, unique(Symbol.(vcov_vars))], vcovformula)
+    vcov_method_data = Vcov.VcovMethod(df[esample, unique(Symbol.(vcov_vars))], vcov)
 
      # Compute weights
     sqrtw = Ones{Float64}(sum(esample))
@@ -90,7 +98,7 @@ function regife(df::AbstractDataFrame, f::FormulaTerm;
     for a in FixedEffectModels.eachterm(formula.rhs)
        if has_fe(a)
            isa(a, InteractionTerm) && error("Fixed effects cannot be interacted")
-           Symbol(first(a.args_parsed)) ∉ factor_vars && error("FixedEffect should correspond to id or time dimension of the factor model")
+           Symbol(FixedEffectModels.fesymbol(a)) ∉ factor_vars && error("FixedEffect should correspond to id or time dimension of the factor model")
        end
     end
     fes, ids, formula = FixedEffectModels.parse_fixedeffect(df, formula)
@@ -126,7 +134,7 @@ function regife(df::AbstractDataFrame, f::FormulaTerm;
     ## Construict vector y and matrix X
     ##
     ##############################################################################
-    subdf = columntable(df[esample, unique(vcat(vars))])
+    subdf = StatsModels.columntable(df[esample, unique(vcat(vars))])
 
     formula_schema = apply_schema(formula, schema(formula, subdf, contrasts), StatisticalModel)
 
@@ -227,7 +235,7 @@ function regife(df::AbstractDataFrame, f::FormulaTerm;
     # compute residuals
     fp = FactorModel(copy(y), sqrtw, id.refs, time.refs, m.rank)
     if has_regressors
-        gemm!('N', 'N', -1.0, X, fs.b, 1.0, fp.y)
+        LinearAlgebra.BLAS.gemm!('N', 'N', -1.0, X, fs.b, 1.0, fp.y)
     end
     subtract_factor!(fp, fs)
     fp.y .= fp.y ./ sqrtw
@@ -252,8 +260,8 @@ function regife(df::AbstractDataFrame, f::FormulaTerm;
         dof_residual = max(size(X, 1) - size(X, 2) - df_absorb_fe, 1)
 
         ## estimate vcov matrix
-        vcov_data = VcovData(Xm, crossxm, residualsm, dof_residual)
-        matrix_vcov = vcov!(vcov_method_data, vcov_data)
+        vcov_data = Vcov.VcovData(Xm, crossxm, residualsm, dof_residual)
+        matrix_vcov = Vcov.vcov!(vcov_method_data, vcov_data)
         # compute various r2
         nobs = sum(esample)
         rss = sum(abs2, residualsm)
@@ -292,7 +300,7 @@ function regife(df::AbstractDataFrame, f::FormulaTerm;
              oldX = convert(Matrix{Float64}, modelmatrix(formula_schema, subdf))
              oldX .= oldX .* sqrtw
             if has_regressors
-                gemm!('N', 'N', -1.0, oldX, coef, 1.0, oldresiduals)
+                LinearAlgebra.BLAS.gemm!('N', 'N', -1.0, oldX, coef, 1.0, oldresiduals)
             end
             fp = FactorModel(oldresiduals, sqrtw, id.refs, time.refs, m.rank)
             subtract_factor!(fp, fs)
