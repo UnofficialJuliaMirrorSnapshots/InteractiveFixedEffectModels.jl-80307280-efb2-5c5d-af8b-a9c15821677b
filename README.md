@@ -9,11 +9,6 @@ The definition of interactive fixed effects follows Bai (2009).Formally, denote 
 
 ![minimization](img/minimization.png)
 
-
-
-## Syntax
-Specify  a formula with a way to compute standard errors with the argument `vcov`.
-
 ```julia
 using DataFrames, RDatasets, InteractiveFixedEffectModels
 df = dataset("plm", "Cigar")
@@ -29,25 +24,30 @@ regife(df, @formula(Sales ~ Price + fe(State) + ife(State, Year, 2)))
 #Price  -0.425372 0.0141163 -30.1334    0.000 -0.453068 -0.397677
 #================================================================
 ```
-A typical formula is composed of one dependent variable and a set of  regressors.
 
-	Interactive fixed effects are indicated with the function  `ife`. For instance, to specify a factor model with id variable `State`, time variable `Year`, and rank 2, use `ife(State, Year, 2)`.
 
-	High-dimensional Fixed effects can be used, as in `fe(State)` but only for the variables specified in the factor model. See [FixedEffectModels.jl](https://github.com/matthieugomez/FixedEffectModels.jl) for more information
+## Syntax
+- Formula
 
+	- Interactive fixed effects are indicated with the function  `ife`. For instance, to specify a factor model with id variable `State`, time variable `Year`, and rank 2, use `ife(State, Year, 2)`.
+
+	- High-dimensional Fixed effects can be used, as in `fe(State)` but only for the variables specified in the factor model. See [FixedEffectModels.jl](https://github.com/matthieugomez/FixedEffectModels.jl) for more information
+
+		```julia
+		regife(df, @formula(Sales ~ Price +  ife(State, Year, 2)))
+		regife(df, @formula(Sales ~ Price +  ife(State, Year, 2) + fe(State)))
+		```
+
+	To construct formula programatically, use
 	```julia
-	regife(df, @formula(Sales ~ Price + Year +  ife(State, Year, 2)))
-	regife(df, @formula(Sales ~ Price + Year +  ife(State, Year, 2) + fe(State)))
+	regife(df, Term(:Sales) ~ Term(:Price) + ife(Term(:State), Term(:Year), 2) + fe(Term(:State)))
 	```
-
-
-## Options
 - Standard errors are indicated as follows
 	```julia
-	vcov.robust()
-	vcov.cluster(:State)
-	vcov.cluster(:State, :Year)
-		```
+	Vcov.robust()
+	Vcov.cluster(:State)
+	Vcov.cluster(:State, :Year)
+	```
 - The option `weights` can add weights
 	```julia
 	weights = :Pop
@@ -64,22 +64,16 @@ A typical formula is composed of one dependent variable and a set of  regressors
 - The option `save = true` saves a new dataframe storing residuals, factors, loadings and the eventual fixed effects. Importantly, the returned dataframe is aligned with the initial dataframe (rows not used in the estimation are simply filled with `missing`s).
 
 
-## Construct Model Programatically
-You can use
-```julia
-using StatsModels, DataFrames, RDatasets, InteractiveFixedEffectModels
-df = dataset("plm", "Cigar")
-regife(df, Term(:Sales) ~ Term(:NDI) + fe(Term(:State)) + ife(Term(:State), Term(:Year), 2), Vcov.cluster(:State))
-```
+
+## FAQ
 
 
-
-## Local minimum vs global minimum
+#### Local minimum vs global minimum
 The algorithm can estimate models with missing observations per id x time, multiple observations per id x time, and weights.
 
 However, in these cases, the optimization problem may have local minima. The algorithm tries to catch these cases, and, if need be, restart the optimization until the global minimum is reached. However I am not sure that all the cases are caught. 
 
-## FAQ
+
 #### Does the package estimate PCA / factor models?
 
 Yes. Factor models are a particular case of interactive fixed effect models. 
